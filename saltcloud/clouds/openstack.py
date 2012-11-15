@@ -101,6 +101,12 @@ def get_conn():
     )
 
 
+def ssh_interface(vm_):
+    '''
+    Return the ssh_interface type to connect to. Either 'public_ips' (default) or 'private_ips'.
+    '''
+    return vm_.get('ssh_interface', __opts__.get('OPENSTACK.ssh_interface', 'public_ips'))
+
 def create(vm_):
     '''
     Create a single vm from a data dict
@@ -155,6 +161,8 @@ def create(vm_):
         private = nodelist[vm_['name']]['private_ips']
         public = nodelist[vm_['name']]['public_ips']
         if private and not public:
+            if ssh_interface(vm_) == 'private_ips':
+                break
             print('Private IPs returned, but not public... checking for misidentified IPs')
             log.warn('Private IPs returned, but not public... checking for misidentified IPs')
             for private_ip in private:
@@ -174,16 +182,13 @@ def create(vm_):
             break
         time.sleep(1)
 
-    if vm_['name'].public_ips:
-        host = vm_['name'].public_ips[0]
-    elif vm_['name'].private_ip:
-        log.warn('Trying to use private ip for deployment')
-        host = vm_['name'].private_ips[0]
+    if ssh_interface(vm_) == 'private_ips':
+        ip_address = data.private_ips[0]
     else:
-        raise RuntimeError('Could not find any valid ip')
+        ip_address = data.public_ips[0]
 
     deployargs = {
-        'host': host,
+        'host': ip_address,
         'script': deploy_script.script,
         'name': vm_['name'],
 	'sock_dir': __opts__['sock_dir']
