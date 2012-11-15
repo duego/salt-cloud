@@ -170,11 +170,20 @@ def create(vm_):
                         data.private_ips.append(private_ip)
         nr_count += 1
         if nr_count > 50:
-            not_ready = False
+            log.warn('Timed out waiting for a public ip, continuing anyway')
+            break
         time.sleep(1)
 
+    if vm_['name'].public_ips:
+        host = vm_['name'].public_ips[0]
+    elif vm_['name'].private_ip:
+        log.warn('Trying to use private ip for deployment')
+        host = vm_['name'].private_ips[0]
+    else:
+        raise RuntimeError('Could not find any valid ip')
+
     deployargs = {
-        'host': data.public_ips[0],
+        'host': host,
         'script': deploy_script.script,
         'name': vm_['name'],
 	'sock_dir': __opts__['sock_dir']
