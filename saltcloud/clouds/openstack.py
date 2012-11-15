@@ -176,6 +176,9 @@ def create(vm_):
                     log.warn('{0} is a private ip'.format(private_ip))
                     if private_ip not in data.private_ips:
                         data.private_ips.append(private_ip)
+            if ssh_interface(vm_) == 'private_ips' and data.private_ips:
+                break
+
         nr_count += 1
         if nr_count > 50:
             log.warn('Timed out waiting for a public ip, continuing anyway')
