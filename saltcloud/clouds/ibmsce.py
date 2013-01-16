@@ -31,7 +31,7 @@ import time
 import types
 import logging
 
-# Import libcloud 
+# Import libcloud
 from libcloud.compute.types import Provider
 from libcloud.compute.providers import get_driver
 from libcloud.compute.deployment import MultiStepDeployment, ScriptDeployment, SSHKeyDeployment
@@ -40,20 +40,22 @@ from libcloud.compute.base import NodeAuthSSHKey
 # Import generic libcloud functions
 from saltcloud.libcloudfuncs import *
 
+# Import saltcloud libs
+from saltcloud.utils import namespaced_function
+
 # Get logging started
 log = logging.getLogger(__name__)
 
 # Some of the libcloud functions need to be in the same namespace as the
 # functions defined in the module, so we create new function objects inside
 # this module namespace
-avail_locations = types.FunctionType(avail_locations.__code__, globals())
-avail_images = types.FunctionType(avail_images.__code__, globals())
-avail_sizes = types.FunctionType(avail_sizes.__code__, globals())
-script = types.FunctionType(script.__code__, globals())
-destroy = types.FunctionType(destroy.__code__, globals())
-list_nodes = types.FunctionType(list_nodes.__code__, globals())
-list_nodes_full = types.FunctionType(list_nodes_full.__code__, globals())
-list_nodes_select = types.FunctionType(list_nodes_select.__code__, globals())
+avail_images = namespaced_function(avail_images, globals())
+avail_sizes = namespaced_function(avail_sizes, globals())
+script = namespaced_function(script, globals())
+destroy = namespaced_function(destroy, globals())
+list_nodes = namespaced_function(list_nodes, globals())
+list_nodes_full = namespaced_function(list_nodes_full, globals())
+list_nodes_select = namespaced_function(list_nodes_select, globals())
 
 
 # Only load in this module is the IBMSCE configurations are in place
@@ -69,7 +71,7 @@ def __virtual__():
 
 def get_conn():
     '''
-    Return a conn object for the passed vm data
+    Return a conn object for the passed VM data
     '''
     driver = get_driver(Provider.IBM)
     return driver(
@@ -80,7 +82,7 @@ def get_conn():
 
 def create(vm_):
     '''
-    Create a single vm from a data dict
+    Create a single VM from a data dict
     '''
     log.info('Creating Cloud VM {0}'.format(vm_['name']))
     conn = get_conn()
@@ -128,21 +130,22 @@ def create(vm_):
             not_ready = False
         time.sleep(15)
 
-    log.debug('Deploying {0} using IP address {1}'.format(vm_['name'], data.public_ips[0]))
-
-    deployed = saltcloud.utils.deploy_script(
-        host=data.public_ips[0],
-        username='idcuser',
-        key_filename=__opts__['IBMSCE.ssh_key_file'],
-        script=deploy_script.script,
-        name=vm_['name'],
-        provider='ibmsce',
-        sudo=True,
-        sock_dir=__opts__['sock_dir'])
-    if deployed:
-        log.info('Salt installed on {0}'.format(vm_['name']))
-    else:
-        log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
+    if __opts__['deploy'] is True:
+        log.debug('Deploying {0} using IP address {1}'.format(vm_['name'], data.public_ips[0]))
+        deployed = saltcloud.utils.deploy_script(
+            host=data.public_ips[0],
+            username='idcuser',
+            key_filename=__opts__['IBMSCE.ssh_key_file'],
+            script=deploy_script.script,
+            name=vm_['name'],
+            provider='ibmsce',
+            sudo=True,
+            start_action=__opts__['start_action'],
+            sock_dir=__opts__['sock_dir'])
+        if deployed:
+            log.info('Salt installed on {0}'.format(vm_['name']))
+        else:
+            log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
 
     log.info('Created Cloud VM {0} with the following values:'.format(vm_['name']))
     for key, val in data.__dict__.items():

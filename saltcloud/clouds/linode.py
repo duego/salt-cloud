@@ -29,17 +29,22 @@ from libcloud.compute.base import NodeAuthPassword
 # Import salt libs
 from saltcloud.libcloudfuncs import *
 
+# Import saltcloud libs
+from saltcloud.utils import namespaced_function
+
+
 # Get logging started
 log = logging.getLogger(__name__)
 
+
 # Redirect linode functions to this module namespace
-avail_images = types.FunctionType(avail_images.__code__, globals())
-avail_sizes = types.FunctionType(avail_sizes.__code__, globals())
-script = types.FunctionType(script.__code__, globals())
-destroy = types.FunctionType(destroy.__code__, globals())
-list_nodes = types.FunctionType(list_nodes.__code__, globals())
-list_nodes_full = types.FunctionType(list_nodes_full.__code__, globals())
-list_nodes_select = types.FunctionType(list_nodes_select.__code__, globals())
+avail_images = namespaced_function(avail_images, globals())
+avail_sizes = namespaced_function(avail_sizes, globals())
+script = namespaced_function(script, globals())
+destroy = namespaced_function(destroy, globals())
+list_nodes = namespaced_function(list_nodes, globals())
+list_nodes_full = namespaced_function(list_nodes_full, globals())
+list_nodes_select = namespaced_function(list_nodes_select, globals())
 
 
 # Only load in this module if the LINODE configurations are in place
@@ -55,7 +60,7 @@ def __virtual__():
 
 def get_conn():
     '''
-    Return a conn object for the passed vm data
+    Return a conn object for the passed VM data
     '''
     driver = get_driver(Provider.LINODE)
     return driver(
@@ -95,7 +100,7 @@ def get_password(vm_):
 
 def create(vm_):
     '''
-    Create a single vm from a data dict
+    Create a single VM from a data dict
     '''
     log.info('Creating Cloud VM {0}'.format(vm_['name']))
     conn = get_conn()
@@ -117,17 +122,20 @@ def create(vm_):
         sys.stderr.write(err)
         log.error(err)
         return False
-    deployed = saltcloud.utils.deploy_script(
-        host=data.public_ips[0],
-        username='root',
-        password=__opts__['LINODE.password'],
-        script=deploy_script.script,
-        name=vm_['name'],
-        sock_dir=__opts__['sock_dir'])
-    if deployed:
-        log.info('Salt installed on {0}'.format(vm_['name']))
-    else:
-        log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
+
+    if __opts__['deploy'] is True:
+        deployed = saltcloud.utils.deploy_script(
+            host=data.public_ips[0],
+            username='root',
+            password=__opts__['LINODE.password'],
+            script=deploy_script.script,
+            name=vm_['name'],
+            start_action=__opts__['start_action'],
+            sock_dir=__opts__['sock_dir'])
+        if deployed:
+            log.info('Salt installed on {0}'.format(vm_['name']))
+        else:
+            log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
 
     log.info('Created Cloud VM {0} with the following values:'.format(vm_['name']))
     for key, val in data.__dict__.items():

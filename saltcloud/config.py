@@ -24,6 +24,7 @@ def cloud_config(path):
             'ssh_auth': '',
             'keysize': 4096,
             'os': '',
+            'start_action': None,
             # Logging defaults
             'log_file': '/var/log/salt/cloud',
             'log_level': None,
@@ -39,12 +40,56 @@ def cloud_config(path):
     if 'include' in opts:
         opts = salt.config.include_config(opts, path)
 
+    opts = old_to_new(opts)
+    opts = prov_dict(opts)
+
+    return opts
+
+
+def old_to_new(opts):
+    optskeys = opts.keys()
+    providers = ('AWS',
+                 'GOGRID',
+                 'IBMSCE',
+                 'JOYENT',
+                 'LINODE',
+                 'OPENSTACK',
+                 'RACKSPACE')
+    for opt in optskeys:
+        for provider in providers:
+            if opt.startswith(provider):
+                if provider.lower() not in opts:
+                    opts[provider.lower()] = {}
+                comps = opt.split('.')
+                opts[provider.lower()][comps[1]] = opts[opt]
+    return opts
+
+
+def prov_dict(opts):
+    providers = ('AWS',
+                 'GOGRID',
+                 'IBMSCE',
+                 'JOYENT',
+                 'LINODE',
+                 'OPENSTACK',
+                 'RACKSPACE')
+    optskeys = opts.keys()
+    opts['providers'] = {}
+    for provider in providers:
+        lprov = provider.lower()
+        opts['providers'][lprov] = {}
+        for opt in optskeys:
+            if opt == lprov:
+                opts['providers'][lprov][lprov] = opts[opt]
+            elif type(opts[opt]) is dict and 'provider' in opts[opt]:
+                if opts[opt]['provider'] == lprov:
+                    opts['providers'][lprov][opt] = opts[opt]
     return opts
 
 
 def vm_config(path):
     '''
-    Read in the salt cloud vm config file
+    Read in the salt cloud VM config file
     '''
     # No defaults
     opts = {}

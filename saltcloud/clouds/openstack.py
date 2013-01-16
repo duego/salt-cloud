@@ -9,10 +9,9 @@ OpenStack provides a number of ways to authenticate. This module uses password-
 based authentication, using auth v2.0. It is likely to start supporting other
 methods of authentication provided by OpenStack in the future.
 
-This module has been tested to work with HP Cloud. Testing for Rackspace's
-implementation is still under way. With the HP Cloud, the following parameters
-are required, and can be found under the API Keys section of the Account tab in
-their web interface:
+This module has been tested to work with HP Cloud and Rackspace. See the
+documentation for specific options for either of these providers. Some examples
+are provided below:
 
 .. code-block:: yaml
 
@@ -26,10 +25,17 @@ their web interface:
     OPENSTACK.tenant: myuser-tenant1
     # The OpenStack user name
     OPENSTACK.user: myuser
-    # The OpenStack password
-    OPENSTACK.password: letmein
     # The OpenStack keypair name
     OPENSTACK.ssh_key_name
+
+Either a password or an API key must also be specified:
+
+.. code-block:: yaml
+
+    # The OpenStack password
+    OPENSTACK.password: letmein
+    # The OpenStack API key
+    OPENSTACK.apikey: 901d3f579h23c8v73q9
 
 '''
 
@@ -44,7 +50,8 @@ import sys
 import logging
 import socket
 
-# Import libcloud 
+# Import libcloud
+from libcloud.compute.base import NodeState
 from libcloud.compute.types import Provider
 from libcloud.compute.providers import get_driver
 from libcloud.compute.deployment import MultiStepDeployment, ScriptDeployment, SSHKeyDeployment
@@ -52,20 +59,26 @@ from libcloud.compute.deployment import MultiStepDeployment, ScriptDeployment, S
 # Import generic libcloud functions
 from saltcloud.libcloudfuncs import *
 
+# Import salt libs
+from salt.exceptions import SaltException
+
+# Import saltcloud libs
+from saltcloud.utils import namespaced_function
+
 # Get logging started
 log = logging.getLogger(__name__)
+
 
 # Some of the libcloud functions need to be in the same namespace as the
 # functions defined in the module, so we create new function objects inside
 # this module namespace
-avail_locations = types.FunctionType(avail_locations.__code__, globals())
-avail_images = types.FunctionType(avail_images.__code__, globals())
-avail_sizes = types.FunctionType(avail_sizes.__code__, globals())
-script = types.FunctionType(script.__code__, globals())
-destroy = types.FunctionType(destroy.__code__, globals())
-list_nodes = types.FunctionType(list_nodes.__code__, globals())
-list_nodes_full = types.FunctionType(list_nodes_full.__code__, globals())
-list_nodes_select = types.FunctionType(list_nodes_select.__code__, globals())
+avail_images = namespaced_function(avail_images, globals())
+avail_sizes = namespaced_function(avail_sizes, globals())
+script = namespaced_function(script, globals())
+destroy = namespaced_function(destroy, globals())
+list_nodes = namespaced_function(list_nodes, globals())
+list_nodes_full = namespaced_function(list_nodes_full, globals())
+list_nodes_select = namespaced_function(list_nodes_select, globals())
 
 
 # Only load in this module is the OPENSTACK configurations are in place
@@ -81,13 +94,12 @@ def __virtual__():
 
 def get_conn():
     '''
-    Return a conn object for the passed vm data
+    Return a conn object for the passed VM data
     '''
     driver = get_driver(Provider.OPENSTACK)
     authinfo = {
             'ex_force_auth_url': __opts__['OPENSTACK.identity_url'],
-            'ex_force_auth_version': '2.0_password',
-    }
+            }
 
     if 'OPENSTACK.compute_name' in __opts__:
         authinfo['ex_force_service_name'] = __opts__['OPENSTACK.compute_name']
@@ -98,11 +110,22 @@ def get_conn():
     if 'OPENSTACK.tenant' in __opts__:
         authinfo['ex_tenant_name'] = __opts__['OPENSTACK.tenant']
 
-    return driver(
+    if 'OPENSTACK.password' in __opts__:
+        authinfo['ex_force_auth_version'] = '2.0_password'
+        log.debug('OpenStack authenticating using password')
+        return driver(
             __opts__['OPENSTACK.user'],
             __opts__['OPENSTACK.password'],
             **authinfo
-    )
+            )
+    elif 'OPENSTACK.apikey' in __opts__:
+        authinfo['ex_force_auth_version'] = '2.0_apikey'
+        log.debug('OpenStack authenticating using apikey')
+        return driver(
+            __opts__['OPENSTACK.user'],
+            __opts__['OPENSTACK.apikey'],
+            **authinfo
+            )
 
 
 def preferred_ip(vm_, ips):
@@ -131,9 +154,10 @@ def ssh_interface(vm_):
 
 def create(vm_):
     '''
-    Create a single vm from a data dict
+    Create a single VM from a data dict
     '''
     log.info('Creating Cloud VM {0}'.format(vm_['name']))
+    saltcloud.utils.check_name(vm_['name'], '[a-z0-9_-]')
     conn = get_conn()
     deploy_script = script(vm_)
     kwargs = {}
@@ -175,13 +199,15 @@ def create(vm_):
         return False
 
     not_ready = True
-    nr_count = 0
-    log.debug('Looking for IP addresses')
+    nr_total = 50
+    nr_count = nr_total
     while not_ready:
-        nodelist = list_nodes()
+        log.debug('Looking for IP addresses')
+        nodelist = list_nodes(conn)
         private = nodelist[vm_['name']]['private_ips']
         public = nodelist[vm_['name']]['public_ips']
-        if private and not public:
+        running = nodelist[vm_['name']]['state'] == node_state(NodeState.RUNNING)
+        if running and private and not public:
             log.warn('Private IPs returned, but not public... checking for misidentified IPs')
             for private_ip in private:
                 private_ip = preferred_ip(vm_, [private_ip])
@@ -196,15 +222,15 @@ def create(vm_):
             if ssh_interface(vm_) == 'private_ips' and data.private_ips:
                 break
 
-        if public:
+        if running and public:
             data.public_ips = public
             not_ready = False
 
-        nr_count += 1
-        if nr_count > 50:
+        nr_count -= 1
+        if nr_count == 0:
             log.warn('Timed out waiting for a public ip, continuing anyway')
             break
-        time.sleep(1)
+        time.sleep(nr_total - nr_count + 5)
 
     if ssh_interface(vm_) == 'private_ips':
         ip_address = preferred_ip(vm_, data.private_ips)
@@ -213,17 +239,23 @@ def create(vm_):
     log.debug('Using IP address {0}'.format(ip_address))
 
     if not ip_address:
-        raise
+        raise SaltException('A valid IP address was not found')
 
     deployargs = {
         'host': ip_address,
         'script': deploy_script.script,
         'name': vm_['name'],
-        'sock_dir': __opts__['sock_dir']
+        'sock_dir': __opts__['sock_dir'],
+        'start_action': __opts__['start_action'],
+        'minion_pem': vm_['priv_key'],
+        'minion_pub': vm_['pub_key'],
     }
 
+    deployargs['minion_conf'] = saltcloud.utils.minion_conf_string(__opts__, vm_)
     if 'ssh_username' in vm_:
+        deployargs['deploy_command'] = 'sudo /tmp/deploy.sh'
         deployargs['username'] = vm_['ssh_username']
+        deployargs['tty'] = True
     else:
         deployargs['username'] = 'root'
     log.debug('Using {0} as SSH username'.format(deployargs['username']))
@@ -239,12 +271,14 @@ def create(vm_):
         deployargs['sudo'] = vm_['sudo']
         log.debug('Running root commands using sudo')
 
-    deployed = saltcloud.utils.deploy_script(**deployargs)
-    if deployed:
-        log.info('Salt installed on {0}'.format(vm_['name']))
-    else:
-        log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
+    if __opts__['deploy'] is True:
+        deployed = saltcloud.utils.deploy_script(**deployargs)
+        if deployed:
+            log.info('Salt installed on {0}'.format(vm_['name']))
+        else:
+            log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
 
     log.info('Created Cloud VM {0} with the following values:'.format(vm_['name']))
     for key, val in data.__dict__.items():
         log.info('  {0}: {1}'.format(key, val))
+

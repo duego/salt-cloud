@@ -5,10 +5,10 @@ Primary interfaces for the salt-cloud system
 # CLI options
 # salt cloud config - /etc/salt/cloud
 # salt master config (for master integration)
-# salt vm config, where vms are defined - /etc/salt/cloud.vm
+# salt VM config, where VMs are defined - /etc/salt/cloud.profiles
 #
 # The cli, master and cloud configs will merge for opts
-# the vm data will be in opts['vm']
+# the VM data will be in opts['vm']
 
 # Import python libs
 import optparse
@@ -22,6 +22,7 @@ import salt.output
 
 # Import saltcloud libs
 from saltcloud.utils import parsers
+from saltcloud.libcloudfuncs import libcloud_version
 
 
 class SaltCloud(parsers.SaltCloudParser):
@@ -29,6 +30,8 @@ class SaltCloud(parsers.SaltCloudParser):
         '''
         Execute the salt-cloud command line
         '''
+        libcloud_version()
+
         # Parse shell arguments
         self.parse_args()
 
@@ -77,6 +80,15 @@ class SaltCloud(parsers.SaltCloudParser):
             else:
                 names = self.config.get('names', None)
             mapper.destroy(names)
+            self.exit(0)
+
+        if self.options.action and (self.config.get('names', None) or
+                                     self.options.map):
+            if self.options.map:
+                names = mapper.delete_map(query='list_nodes')
+            else:
+                names = self.config.get('names', None)
+            mapper.do_action(names)
             self.exit(0)
 
         if self.options.profile and self.config.get('names', False):

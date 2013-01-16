@@ -23,8 +23,6 @@ class CloudConfigMixIn(object):
     __metaclass__ = parsers.MixInMeta
     _mixin_prio_ = -1000    # First options seen
 
-    config = {'log_level': None}
-
     def _mixin_setup(self):
         group = self.config_group = optparse.OptionGroup(
             self,
@@ -46,7 +44,7 @@ class CloudConfigMixIn(object):
             '-V', '--profiles', '--vm_config',
             dest='vm_config',
             default='/etc/salt/cloud.profiles',
-            help=('The location of the saltcloud vm config file. Default: '
+            help=('The location of the saltcloud VM config file. Default: '
                   '%default')
         )
         self.add_option_group(group)
@@ -116,26 +114,31 @@ class CloudConfigMixIn(object):
 
         # Grab data from the 4 sources
         # 1st - Master config
-        self.config.update(
-            salt.config.master_config(self.options.master_config)
-        )
+        # Done in CloudConfigMixIn.process_master_config()
 
         # 2nd Override master config with salt-cloud config
-        self.config.update(config.cloud_config(self.options.cloud_config))
-
-        ## Fix conf_file set on master config so that salt parsers don't fail
-        #self.config['conf_file'] = self.options.cloud_config
+        # Done in CloudConfigMixIn.process_cloud_config()
 
         # 3rd - Override config with cli options
         self.__merge_config_with_cli()
 
-        # 4th - Include vm config
+        # 4th - Include VM config
         self.config['vm'] = config.vm_config(self.options.vm_config)
 
         # Remove log_level_logfile from config if set to None so it can be
         # equal to console log_level
         if self.config['log_level_logfile'] is None:
             self.config.pop('log_level_logfile')
+
+    def process_master_config(self):
+        self.config = salt.config.master_config(
+            self.options.master_config
+        )
+
+    def process_cloud_config(self):
+        self.config.update(config.cloud_config(self.options.cloud_config))
+    # Force process_cloud_config to run AFTER process_master_config
+    process_cloud_config._mixin_prio_ = -999
 
 
 class ExecutionOptionsMixIn(object):
@@ -149,9 +152,15 @@ class ExecutionOptionsMixIn(object):
             # Include description here as a string
         )
         group.add_option(
+            '-a', '--action',
+            default='',
+            help=('Perform an action that may be specific to this cloud'
+                  'provider')
+        )
+        group.add_option(
             '-p', '--profile',
             default='',
-            help='Specify a profile to use for the vms'
+            help='Specify a profile to use for the VMs'
         )
         group.add_option(
             '-m', '--map',
@@ -162,14 +171,21 @@ class ExecutionOptionsMixIn(object):
             '-H', '--hard',
             default=False,
             action='store_true',
-            help=('Delete all vms that are not defined in the map file '
-                  'CAUTION!!! This operation can irrevocably destroy vms!')
+            help=('Delete all VMs that are not defined in the map file '
+                  'CAUTION!!! This operation can irrevocably destroy VMs!')
         )
         group.add_option(
             '-d', '--destroy',
             default=False,
             action='store_true',
-            help='Specify a vm to destroy'
+            help='Specify a VM to destroy'
+        )
+        group.add_option(
+            '--no-deploy',
+            default=True,
+            dest='deploy',
+            action='store_false',
+            help='Don\'t run a deploy script after VM creation'
         )
         group.add_option(
             '-P', '--parallel',

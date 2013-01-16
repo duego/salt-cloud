@@ -12,7 +12,7 @@ it requires that the username and password to the joyent accound be configured
     JOYENT.user: fred
     # The Joyent user's password
     JOYENT.password: saltybacon
-    # The location of the ssh private key that can log into the new vm
+    # The location of the ssh private key that can log into the new VM
     JOYENT.private_key: /root/joyent.pem
 
 '''
@@ -25,14 +25,17 @@ import subprocess
 import types
 import logging
 
-# Import libcloud 
+# Import libcloud
 from libcloud.compute.types import Provider
 from libcloud.compute.providers import get_driver
 from libcloud.compute.deployment import MultiStepDeployment, ScriptDeployment, SSHKeyDeployment
 
 # Import generic libcloud functions
-import saltcloud.utils
 from saltcloud.libcloudfuncs import *
+
+# Import saltcloud libs
+import saltcloud.utils
+from saltcloud.utils import namespaced_function
 
 # Get logging started
 log = logging.getLogger(__name__)
@@ -41,13 +44,13 @@ log = logging.getLogger(__name__)
 # Some of the libcloud functions need to be in the same namespace as the
 # functions defined in the module, so we create new function objects inside
 # this module namespace
-avail_images = types.FunctionType(avail_images.__code__, globals())
-avail_sizes = types.FunctionType(avail_sizes.__code__, globals())
-script = types.FunctionType(script.__code__, globals())
-destroy = types.FunctionType(destroy.__code__, globals())
-list_nodes = types.FunctionType(list_nodes.__code__, globals())
-list_nodes_full = types.FunctionType(list_nodes_full.__code__, globals())
-list_nodes_select = types.FunctionType(list_nodes_select.__code__, globals())
+avail_images = namespaced_function(avail_images, globals())
+avail_sizes = namespaced_function(avail_sizes, globals())
+script = namespaced_function(script, globals())
+destroy = namespaced_function(destroy, globals())
+list_nodes = namespaced_function(list_nodes, globals())
+list_nodes_full = namespaced_function(list_nodes_full, globals())
+list_nodes_select = namespaced_function(list_nodes_select, globals())
 
 
 # Only load in this module is the JOYENT configurations are in place
@@ -63,7 +66,7 @@ def __virtual__():
 
 def get_conn():
     '''
-    Return a conn object for the passed vm data
+    Return a conn object for the passed VM data
     '''
     driver = get_driver(Provider.JOYENT)
     return driver(
@@ -74,7 +77,7 @@ def get_conn():
 
 def create(vm_):
     '''
-    Create a single vm from a data dict
+    Create a single VM from a data dict
     '''
     log.info('Creating Cloud VM {0}'.format(vm_['name']))
     conn = get_conn()
@@ -93,18 +96,39 @@ def create(vm_):
                        )
         log.error(err)
         return False
-    if saltcloud.utils.wait_for_ssh(data.public_ips[0]):
-        cmd = ('ssh -oStrictHostKeyChecking=no -t -i {0} {1}@{2} '
-               '"{3}"').format(
-                       __opts__['JOYENT.private_key'],
-                       'root',
-                       data.public_ips[0],
-                       deploy_script.script,
-                       )
-        subprocess.call(cmd, shell=True)
-    else:
-        log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
+    if __opts__['deploy'] is True:
+        deployed = saltcloud.utils.deploy_script(
+            host=data.public_ips[0],
+            username='root',
+            key_filename=__opts__['JOYENT.private_key'],
+            deploy_command='/tmp/deploy.sh',
+            tty=True,
+            script=deploy_script.script,
+            name=vm_['name'],
+            start_action=__opts__['start_action'],
+            conf_file=__opts__['conf_file'],
+            sock_dir=__opts__['sock_dir'])
+        if deployed:
+            log.info('Salt installed on {0}'.format(vm_['name']))
+        else:
+            log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
 
     log.info('Created Cloud VM {0} with the following values:'.format(vm_['name']))
     for key, val in data.__dict__.items():
         log.info('  {0}: {1}'.format(key, val))
+
+
+def stop(name):
+    '''
+    Stop a node
+    '''
+    conn = get_conn()
+    node = get_node(conn, name)
+    try:
+        data = conn.ex_stop_node(node=node)
+        log.debug(data)
+        log.info('Stopped node {0}'.format(name))
+    except Exception as exc:
+        log.error('Failed to stop node {0}'.format(name))
+        log.error(exc)
+

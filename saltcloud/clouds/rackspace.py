@@ -28,7 +28,8 @@ import logging
 import socket
 import time
 
-# Import libcloud 
+# Import libcloud
+from libcloud.compute.base import NodeState
 from libcloud.compute.types import Provider
 from libcloud.compute.providers import get_driver
 from libcloud.compute.deployment import MultiStepDeployment, ScriptDeployment, SSHKeyDeployment
@@ -36,20 +37,24 @@ from libcloud.compute.deployment import MultiStepDeployment, ScriptDeployment, S
 # Import generic libcloud functions
 from saltcloud.libcloudfuncs import *
 
+# Import saltcloud libs
+from saltcloud.utils import namespaced_function
+
+
 # Get logging started
 log = logging.getLogger(__name__)
+
 
 # Some of the libcloud functions need to be in the same namespace as the
 # functions defined in the module, so we create new function objects inside
 # this module namespace
-avail_locations = types.FunctionType(avail_locations.__code__, globals())
-avail_images = types.FunctionType(avail_images.__code__, globals())
-avail_sizes = types.FunctionType(avail_sizes.__code__, globals())
-script = types.FunctionType(script.__code__, globals())
-destroy = types.FunctionType(destroy.__code__, globals())
-list_nodes = types.FunctionType(list_nodes.__code__, globals())
-list_nodes_full = types.FunctionType(list_nodes_full.__code__, globals())
-list_nodes_select = types.FunctionType(list_nodes_select.__code__, globals())
+avail_images = namespaced_function(avail_images, globals())
+avail_sizes = namespaced_function(avail_sizes, globals())
+script = namespaced_function(script, globals())
+destroy = namespaced_function(destroy, globals())
+list_nodes = namespaced_function(list_nodes, globals())
+list_nodes_full = namespaced_function(list_nodes_full, globals())
+list_nodes_select = namespaced_function(list_nodes_select, globals())
 
 
 # Only load in this module is the RACKSPACE configurations are in place
@@ -65,7 +70,7 @@ def __virtual__():
 
 def get_conn():
     '''
-    Return a conn object for the passed vm data
+    Return a conn object for the passed VM data
     '''
     driver = get_driver(Provider.RACKSPACE)
     return driver(
@@ -100,7 +105,7 @@ def ssh_interface(vm_):
 
 def create(vm_):
     '''
-    Create a single vm from a data dict
+    Create a single VM from a data dict
     '''
     log.info('Creating Cloud VM {0}'.format(vm_['name']))
     conn = get_conn()
@@ -122,13 +127,15 @@ def create(vm_):
         return False
 
     not_ready = True
-    nr_count = 0
+    nr_count = 50
     log.debug('Looking for IP addresses')
     while not_ready:
         nodelist = list_nodes()
         private = nodelist[vm_['name']]['private_ips']
         public = nodelist[vm_['name']]['public_ips']
-        if private and not public:
+        running = nodelist[vm_['name']]['state'] == NodeState.RUNNING
+
+        if running and private and not public:
             log.warn('Private IPs returned, but not public... checking for misidentified IPs')
             for private_ip in private:
                 private_ip = preferred_ip(vm_, [private_ip])
@@ -143,15 +150,15 @@ def create(vm_):
             if ssh_interface(vm_) == 'private_ips' and data.private_ips:
                 break
 
-        if public:
+        if running and public:
             data.public_ips = public
             not_ready = False
 
-        nr_count += 1
-        if nr_count > 50:
+        nr_count -= 1
+        if nr_count == 0:
             log.warn('Timed out waiting for a public ip, continuing anyway')
             break
-        time.sleep(1)
+        time.sleep(nr_count)
 
     if ssh_interface(vm_) == 'private_ips':
         ip_address = preferred_ip(vm_, data.private_ips)
@@ -162,17 +169,19 @@ def create(vm_):
     if not ip_address:
         raise
 
-    deployed = saltcloud.utils.deploy_script(
-        host=ip_address,
-        username='root',
-        password=data.extra['password'],
-        script=deploy_script.script,
-        name=vm_['name'],
-        sock_dir=__opts__['sock_dir'])
-    if deployed:
-        log.info('Salt installed on {0}'.format(vm_['name']))
-    else:
-        log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
+    if __opts__['deploy'] is True:
+        deployed = saltcloud.utils.deploy_script(
+            host=ip_address,
+            username='root',
+            password=data.extra['password'],
+            script=deploy_script.script,
+            name=vm_['name'],
+            start_action=__opts__['start_action'],
+            sock_dir=__opts__['sock_dir'])
+        if deployed:
+            log.info('Salt installed on {0}'.format(vm_['name']))
+        else:
+            log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
 
     log.info('Created Cloud VM {0} with the following values:'.format(vm_['name']))
     for key, val in data.__dict__.items():

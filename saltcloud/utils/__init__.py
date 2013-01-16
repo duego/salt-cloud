@@ -13,6 +13,8 @@ import subprocess
 import salt.utils.event
 import multiprocessing
 import logging
+import types
+import re
 
 # Get logging started
 log = logging.getLogger(__name__)
@@ -20,12 +22,14 @@ log = logging.getLogger(__name__)
 try:
     import paramiko
 except:
-    log.error('Cannot import paramiko. Please make sure it is correctly installed.')
-    sys.exit(1)
+    raise ImportError(
+        'Cannot import paramiko. Please make sure it is correctly installed.'
+    )
 
 # Import salt libs
 import salt.crypt
 import salt.client
+from salt.exceptions import SaltException
 
 # Import third party libs
 from jinja2 import Template
@@ -91,6 +95,9 @@ def accept_key(pki_dir, pub, id_):
     the opts directory, this method places the pub key in the accepted
     keys dir and removes it from the unaccepted keys dir if that is the case.
     '''
+    if not os.path.exists(pki_dir):
+        os.makedirs(pki_dir)
+
     key = os.path.join(
             pki_dir,
             'minions/{0}'.format(id_)
@@ -106,7 +113,7 @@ def accept_key(pki_dir, pub, id_):
         with open(oldkey) as fp_:
             if fp_.read() == pub:
                 os.remove(oldkey)
-    
+
 
 def remove_key(pki_dir, id_):
     '''
@@ -119,10 +126,11 @@ def remove_key(pki_dir, id_):
     if os.path.isfile(key):
         os.remove(key)
 
+
 def get_option(option, opts, vm_):
     '''
     Convenience function to return the dominant option to be used. Always
-    default to options set in the vm structure, but if the option is not
+    default to options set in the VM structure, but if the option is not
     present there look for it in the main config file
     '''
     if option in vm_:
@@ -141,6 +149,8 @@ def minion_conf_string(opts, vm_):
         minion['master_finger'] = vm_['master_finger']
     minion.update(opts.get('minion', {}))
     minion.update(vm_.get('minion', {}))
+    if 'master' not in minion:
+        raise ValueError("A master was not defined.")
     minion.update(opts.get('map_minion', {}))
     minion.update(vm_.get('map_minion', {}))
     optsgrains = opts.get('map_grains', {})
@@ -158,14 +168,18 @@ def wait_for_ssh(host, port=22, timeout=900):
     '''
     start = time.time()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    trycount = 0
     while True:
+        trycount += 1
         try:
             sock.connect((host, port))
             sock.shutdown(2)
             return True
         except Exception:
             time.sleep(1)
+            log.debug('Retrying SSH connection (try {0})'.format(trycount))
             if time.time() - start > timeout:
+                log.error('SSH connection timed out: {0}'.format(timeout))
                 return False
 
 
@@ -175,7 +189,7 @@ def wait_for_passwd(host, port=22, timeout=900, username='root',
     '''
     Wait until ssh connection can be accessed via password or ssh key
     '''
-    trycount=0
+    trycount = 0
     while trycount < maxtries:
         connectfail = False
         try:
@@ -195,7 +209,7 @@ def wait_for_passwd(host, port=22, timeout=900, username='root',
                 connectfail = True
                 ssh.close()
                 trycount += 1
-                log.warn('Attempting to authenticate (try {0} of {1}): {2}'.format(trycount, maxtries, authexc))
+                log.debug('Attempting to authenticate (try {0} of {1}): {2}'.format(trycount, maxtries, authexc))
                 if trycount < maxtries:
                     time.sleep(trysleep)
                     continue
@@ -204,7 +218,7 @@ def wait_for_passwd(host, port=22, timeout=900, username='root',
                     return False
             except Exception as exc:
                 log.error('There was an error in wait_for_passwd: {0}'.format(exc))
-            if connectfail == False:
+            if connectfail is False:
                 return True
             return False
         except Exception:
@@ -217,7 +231,8 @@ def deploy_script(host, port=22, timeout=900, username='root',
                   password=None, key_filename=None, script=None,
                   deploy_command='/tmp/deploy.sh', sudo=False, tty=None,
                   name=None, pub_key=None, sock_dir=None, provider=None,
-                  conf_file=None, start_action=None):
+                  conf_file=None, start_action=None, minion_pub=None,
+                  minion_pem=None, minion_conf=None):
     '''
     Copy a deploy script to a remote server, execute it, and remove it
     '''
@@ -252,44 +267,85 @@ def deploy_script(host, port=22, timeout=900, username='root',
                 for line in stdout:
                     sys.stdout.write(line)
                 ssh.connect(**kwargs)
-            tmpfh, tmppath = tempfile.mkstemp()
-            tmpfile = open(tmppath, 'w')
-            tmpfile.write(script)
-            tmpfile.close()
             sftp = ssh.get_transport()
             sftp.open_session()
             sftp = paramiko.SFTPClient.from_transport(sftp)
-            log.debug('Uploading /tmp/deploy.sh to {0}'.format(host))
-            sftp.put(tmppath, '/tmp/deploy.sh')
-            os.remove(tmppath)
+            if minion_pem:
+                sftp_file(sftp, host, '/tmp/minion.pem', minion_pem)
+                ssh.exec_command('chmod 600 /tmp/minion.pem')
+            if minion_pub:
+                sftp_file(sftp, host, '/tmp/minion.pub', minion_pub)
+            if minion_conf:
+                sftp_file(sftp, host, '/tmp/minion', minion_conf)
+            if script:
+                sftp_file(sftp, host, '/tmp/deploy.sh', script)
             ssh.exec_command('chmod +x /tmp/deploy.sh')
 
             newtimeout = timeout - (time.mktime(time.localtime()) - starttime)
-            queue = multiprocessing.Queue()
-            process = multiprocessing.Process(
-                    target=lambda: check_auth(name=name, pub_key=pub_key, sock_dir=sock_dir,
-                                              timeout=newtimeout, queue=queue),
-                    )
-            log.debug('Starting new process to wait for salt-minion')
-            process.start()
+            queue = None
+            process = None
+            # Consider this code experimental. It causes Salt Cloud to wait
+            # for the minion to check in, and then fire a startup event.
+            # Unfortunately, it doesn't currently work with Paramiko.
+            if start_action:
+                queue = multiprocessing.Queue()
+                process = multiprocessing.Process(
+                        target=lambda: check_auth(name=name, pub_key=pub_key, sock_dir=sock_dir,
+                                                  timeout=newtimeout, queue=queue),
+                        )
+                log.debug('Starting new process to wait for salt-minion')
+                process.start()
 
-            log.debug('Executing /tmp/deploy.sh')
-            root_cmd(deploy_command, tty, sudo, **kwargs)
-            log.debug('Executed /tmp/deploy.sh')
-            ssh.exec_command('rm /tmp/deploy.sh')
-            log.debug('Removed /tmp/deploy.sh')
-            queuereturn = queue.get()
-            process.join()
-            if queuereturn and start_action:
-                #client = salt.client.LocalClient(conf_file)
-                #output = client.cmd_iter(host, 'state.highstate', timeout=timeout)
-                #for line in output:
-                #    print(line)
-                log.info('Executing {0} on the salt-minion'.format(start_action))
-                root_cmd('salt-call {0}'.format(start_action), tty, sudo, **kwargs)
-                log.info('Finished executing {0} on the salt-minion'.format(start_action))
+            if script:
+                log.debug('Executing /tmp/deploy.sh')
+                if 'bootstrap-salt-minion' in script:
+                    deploy_command += ' -c /tmp/'
+                root_cmd(deploy_command, tty, sudo, **kwargs)
+                log.debug('Executed /tmp/deploy.sh')
+                ssh.exec_command('rm /tmp/deploy.sh')
+                log.debug('Removed /tmp/deploy.sh')
+            if minion_pub:
+                ssh.exec_command('rm /tmp/minion.pub')
+                log.debug('Removed /tmp/minion.pub')
+            if minion_pem:
+                ssh.exec_command('rm /tmp/minion.pem')
+                log.debug('Removed /tmp/minion.pem')
+            if minion_conf:
+                ssh.exec_command('rm /tmp/minion')
+                log.debug('Removed /tmp/minion')
+            if start_action:
+                queuereturn = queue.get()
+                process.join()
+                if queuereturn and start_action:
+                    #client = salt.client.LocalClient(conf_file)
+                    #output = client.cmd_iter(host, 'state.highstate', timeout=timeout)
+                    #for line in output:
+                    #    print(line)
+                    log.info('Executing {0} on the salt-minion'.format(start_action))
+                    root_cmd('salt-call {0}'.format(start_action), tty, sudo, **kwargs)
+                    log.info('Finished executing {0} on the salt-minion'.format(start_action))
+            #Fire deploy action
+            event = salt.utils.event.SaltEvent(
+                'master',
+                sock_dir,
+                )
+            event.fire_event('{0} has been created at {1}'.format(name, host), 'salt-cloud')
             return True
     return False
+
+
+def sftp_file(transport, host, dest_path, contents):
+    '''
+    Given an established sftp session, this function will copy a file to a
+    server using said sftp transport
+    '''
+    tmpfh, tmppath = tempfile.mkstemp()
+    tmpfile = open(tmppath, 'w')
+    tmpfile.write(contents)
+    tmpfile.close()
+    log.debug('Uploading {0} to {1}'.format(dest_path, host))
+    transport.put(tmppath, dest_path)
+    os.remove(tmppath)
 
 
 def root_cmd(command, tty, sudo, **kwargs):
@@ -321,6 +377,7 @@ def root_cmd(command, tty, sudo, **kwargs):
         for line in stdout:
             sys.stdout.write(line)
 
+
 def check_auth(name, pub_key=None, sock_dir=None, queue=None, timeout=300):
     '''
     This function is called from a multiprocess instance, to wait for a minion
@@ -348,10 +405,10 @@ def ip_to_int(ip):
     '''
     Converts an IP address to an integer
     '''
-    ret = 0 
+    ret = 0
     for octet in ip.split('.'):
         ret = ret * 256 + int(octet)
-    return ret 
+    return ret
 
 
 def is_public_ip(ip):
@@ -363,9 +420,34 @@ def is_public_ip(ip):
         # 10.0.0.0/24
         return False
     elif addr > 3232235520 and addr < 3232301055:
-        # 172.16.0.0/12
-        return False
-    elif addr > 2886729728 and addr < 2887778303:
         # 192.168.0.0/16
         return False
+    elif addr > 2886729728 and addr < 2887778303:
+        # 172.16.0.0/12
+        return False
     return True
+
+
+def check_name(name, pattern):
+    '''
+    Check whether the specified name contains invalid characters
+    '''
+    regexp = re.compile(pattern)
+    if not regexp.match(name):
+        raise SaltException('{0} contains characters not supported by this'
+                            'cloud provider. Valid characters are: {1}'.format(
+                            name, pattern))
+
+
+def namespaced_function(function, global_dict):
+    """
+    Redefine(clone) a function under a different globals() namespace scope
+    """
+    namespaced_function = types.FunctionType(
+        function.__code__,
+        global_dict,
+        name=function.__name__,
+        argdefs=function.__defaults__
+    )
+    namespaced_function.__dict__.update(function.__dict__)
+    return namespaced_function

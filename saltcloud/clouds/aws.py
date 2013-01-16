@@ -36,21 +36,25 @@ from libcloud.compute.types import Provider
 from libcloud.compute.providers import get_driver
 from libcloud.compute.deployment import MultiStepDeployment, ScriptDeployment, SSHKeyDeployment
 
-# Import salt libs
+# Import saltcloud libs
 import saltcloud.utils
+from saltcloud.utils import namespaced_function
 from saltcloud.libcloudfuncs import *
+
+# Import salt libs
+from salt.exceptions import SaltException
 
 # Get logging started
 log = logging.getLogger(__name__)
 
 # Init the libcloud functions
-avail_images = types.FunctionType(avail_images.__code__, globals())
-avail_sizes = types.FunctionType(avail_sizes.__code__, globals())
-script = types.FunctionType(script.__code__, globals())
-destroy = types.FunctionType(destroy.__code__, globals())
-list_nodes = types.FunctionType(list_nodes.__code__, globals())
-list_nodes_full = types.FunctionType(list_nodes_full.__code__, globals())
-list_nodes_select = types.FunctionType(list_nodes_select.__code__, globals())
+avail_images = namespaced_function(avail_images, globals())
+avail_sizes = namespaced_function(avail_sizes, globals())
+script = namespaced_function(script, globals())
+destroy = namespaced_function(destroy, globals())
+list_nodes = namespaced_function(list_nodes, globals())
+list_nodes_full = namespaced_function(list_nodes_full, globals())
+list_nodes_select = namespaced_function(list_nodes_select, globals())
 
 
 # Only load in this module if the AWS configurations are in place
@@ -83,17 +87,18 @@ EC2_LOCATIONS = {
 }
 DEFAULT_LOCATION = 'us-east-1'
 
+if hasattr(Provider, 'EC2_AP_SOUTHEAST2'):
+    EC2_LOCATIONS['ap-southeast-2'] = Provider.EC2_AP_SOUTHEAST2
+
 
 def get_conn(**kwargs):
     '''
-    Return a conn object for the passed vm data
+    Return a conn object for the passed VM data
     '''
     if 'location' in kwargs:
         location = kwargs['location']
         if location not in EC2_LOCATIONS:
-            sys.stderr.write('The specified location does not seem to be valid: {0}\n'.format(location))
-            sys.exit(1)
-            return None     #TODO raise exception
+            raise SaltException('The specified location does not seem to be valid: {0}\n'.format(location))
     else:
         location = DEFAULT_LOCATION
 
@@ -133,6 +138,12 @@ def ssh_username(vm_):
         usernames = [username]
     if not 'ec2-user' in usernames:
         usernames.append('ec2-user')
+    if not 'ubuntu' in usernames:
+        usernames.append('ubuntu')
+    if not 'admin' in usernames:
+        usernames.append('admin')
+    if not 'bitnami' in usernames:
+        usernames.append('bitnami')
     if not 'root' in usernames:
         usernames.append('root')
     return usernames
@@ -173,7 +184,7 @@ def get_availability_zone(conn, vm_):
 
 def create(vm_):
     '''
-    Create a single vm from a data dict
+    Create a single VM from a data dict
     '''
     location = get_location(vm_)
     log.info('Creating Cloud VM {0} in {1}'.format(vm_['name'], location))
@@ -203,36 +214,47 @@ def create(vm_):
         log.error(err)
         return False
     log.info('Created node {0}'.format(vm_['name']))
+    waiting_for_ip = 0
     while not data.public_ips:
         time.sleep(0.5)
+        waiting_for_ip += 1
         data = get_node(conn, vm_['name'])
+        log.warn('Salt node waiting_for_ip {0}'.format(waiting_for_ip))
     if ssh_interface(vm_) == "private_ips":
+        log.info('Salt node data. Private_ip: {0}'.format(data.private_ips[0]))
         ip_address = data.private_ips[0]
     else:
+        log.info('Salt node data. Public_ip: {0}'.format(data.public_ips[0]))
         ip_address = data.public_ips[0]
     if saltcloud.utils.wait_for_ssh(ip_address):
         for user in usernames:
             if saltcloud.utils.wait_for_passwd(host=ip_address, username=user, timeout=60, key_filename=__opts__['AWS.private_key']):
                 username = user
                 break
-    deploy_command='bash /tmp/deploy.sh'
-    if username == 'root':
-        deploy_command='/tmp/deploy.sh'
-    deployed = saltcloud.utils.deploy_script(
-        host=ip_address,
-        username=username,
-        key_filename=__opts__['AWS.private_key'],
-        deploy_command=deploy_command,
-        tty=True,
-        script=deploy_script.script,
-        name=vm_['name'],
-        sudo=True,
-        conf_file=__opts__['conf_file'],
-        sock_dir=__opts__['sock_dir'])
-    if deployed:
-        log.info('Salt installed on {0}'.format(vm_['name']))
-    else:
-        log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
+    if __opts__['deploy'] is True:
+        deploy_kwargs = {
+            'host': ip_address,
+            'username': username,
+            'key_filename': __opts__['AWS.private_key'],
+            'deploy_command': 'bash /tmp/deploy.sh',
+            'tty': True,
+            'script': deploy_script.script,
+            'name': vm_['name'],
+            'sudo': True,
+            'start_action': __opts__['start_action'],
+            'conf_file': __opts__['conf_file'],
+            'sock_dir': __opts__['sock_dir'],
+            'minion_pem': vm_['priv_key'],
+            'minion_pub': vm_['pub_key'],
+            }
+        deploy_kwargs['minion_conf'] = saltcloud.utils.minion_conf_string(__opts__, vm_)
+        if username == 'root':
+            deploy_kwargs['deploy_command'] = '/tmp/deploy.sh'
+        deployed = saltcloud.utils.deploy_script(**deploy_kwargs)
+        if deployed:
+            log.info('Salt installed on {0}'.format(vm_['name']))
+        else:
+            log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
 
     log.info('Created Cloud VM {0} with the following values:'.format(vm_['name']))
     for key, val in data.__dict__.items():
@@ -253,8 +275,39 @@ def create_attach_volumes(volumes, location, data):
         if avz.availability_zone.name == node_avz:
             break
     for volume in volumes:
-        volume_name= volume['device'] + " on " +  data.name
+        volume_name = volume['device'] + " on " +  data.name
         created_volume = conn.create_volume(volume['size'], volume_name, avz)
         attach = conn.attach_volume(data, created_volume, volume['device'])
         if attach:
             log.info('{0} attached to {1} (aka {2}) as device {3}'.format(created_volume.id, data.id, data.name, volume['device']))
+
+
+def stop(name):
+    '''
+    Stop a node
+    '''
+    conn = get_conn()
+    node = get_node(conn, name)
+    try:
+        data = conn.ex_stop_node(node=node)
+        log.debug(data)
+        log.info('Stopped node {0}'.format(name))
+    except Exception as exc:
+        log.error('Failed to stop node {0}'.format(name))
+        log.error(exc)
+
+
+def start(name):
+    '''
+    Start a node
+    '''
+    conn = get_conn()
+    node = get_node(conn, name)
+    try:
+        data = conn.ex_start_node(node=node)
+        log.debug(data)
+        log.info('Started node {0}'.format(name))
+    except Exception as exc:
+        log.error('Failed to start node {0}'.format(name))
+        log.error(exc)
+

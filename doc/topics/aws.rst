@@ -28,7 +28,8 @@ Set up the cloud config at ``/etc/salt/cloud``:
     AWS.availability_zone: ap-southeast-1b
 
     # Specify whether to use public or private IP for deploy script
-    AWS.ssh_interface: public
+    # private_ips or public_ips
+    AWS.ssh_interface: public_ips
 
     # Configure which user to use to run the deploy script
     AWS.ssh_username: ec2-user
@@ -89,12 +90,13 @@ is run from another AWS instance, the private IP should be used.
 .. code-block:: yaml
 
     # Specify whether to use public or private IP for deploy script
-    AWS.ssh_interface: public
+    # private_ips or public_ips
+    AWS.ssh_interface: public_ip
 
 AWS instances may not allow remote access to the root user by default. Instead,
 another user must be used to run the deploy script using sudo. Some common
-usernames include ec2-user (for Amazon Linux), ubuntu (for Ubuntu instances)
-and bitnami (for images provided by Bitnami).
+usernames include ec2-user (for Amazon Linux), ubuntu (for Ubuntu instances),
+admin (official Debian) and bitnami (for images provided by Bitnami).
 
 .. code-block:: yaml
 
@@ -110,6 +112,7 @@ file:
     AWS.ssh_username:
       - ec2-user
       - ubuntu
+      - admin
       - bitnami
 
 Multiple security groups can also be specified in the same fashion:

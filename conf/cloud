@@ -1,4 +1,4 @@
-# DO NOT MODIFY THIS FILE.  Copy it to: /etc/salt/cloud
+# this file should be installed at: /etc/salt/cloud 
 #####          VM Defaults           #####
 ##########################################
 # Set the default cloud provider, this can still be overridden on a per vm
@@ -24,6 +24,10 @@
 #AWS.keyname: default
 #AWS.securitygroup: default
 #AWS.private_key: /root/test.pem
+# Specify whether to use public or private IP for deploy script
+# private_ips or public_ips
+#AWS.ssh_interface: public_ips
+
 #
 # Linode takes the single api_key
 #LINODE.apikey: <Linode api key>
@@ -46,12 +50,12 @@
 #
 # The level of messages to send to the console.
 # One of 'garbage', 'trace', 'debug', info', 'warning', 'error', 'critical'.
-# Default: 'warning'
-#log_level: warning
+# Default: 'info'
+#log_level: info
 #
 # The level of messages to send to the log file.
 # One of 'garbage', 'trace', 'debug', info', 'warning', 'error', 'critical'.
-# Default: 'warning'
+# Default: 'info'
 #log_level_logfile:
 
 #
