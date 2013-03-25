@@ -20,15 +20,7 @@ it requires that the username and password to the joyent accound be configured
 # The import section is mostly libcloud boilerplate
 
 # Import python libs
-import os
-import subprocess
-import types
 import logging
-
-# Import libcloud
-from libcloud.compute.types import Provider
-from libcloud.compute.providers import get_driver
-from libcloud.compute.deployment import MultiStepDeployment, ScriptDeployment, SSHKeyDeployment
 
 # Import generic libcloud functions
 from saltcloud.libcloudfuncs import *
@@ -80,8 +72,8 @@ def create(vm_):
     Create a single VM from a data dict
     '''
     log.info('Creating Cloud VM {0}'.format(vm_['name']))
+    saltcloud.utils.check_name(vm_['name'], 'a-zA-Z0-9-')
     conn = get_conn()
-    deploy_script = script(vm_)
     kwargs = {}
     kwargs['name'] = vm_['name']
     kwargs['image'] = get_image(conn, vm_)
@@ -96,32 +88,85 @@ def create(vm_):
                        )
         log.error(err)
         return False
-    if __opts__['deploy'] is True:
-        deployed = saltcloud.utils.deploy_script(
-            host=data.public_ips[0],
-            username='root',
-            key_filename=__opts__['JOYENT.private_key'],
-            deploy_command='/tmp/deploy.sh',
-            tty=True,
-            script=deploy_script.script,
-            name=vm_['name'],
-            start_action=__opts__['start_action'],
-            conf_file=__opts__['conf_file'],
-            sock_dir=__opts__['sock_dir'])
+
+    deploy = vm_.get(
+        'deploy',
+        __opts__.get(
+            'JOYENT.deploy',
+            __opts__['deploy']
+        )
+    )
+    if deploy is True:
+        deploy_script = script(vm_)
+        deploy_kwargs = {
+            'host': data.public_ips[0],
+            'username': 'root',
+            'key_filename': __opts__['JOYENT.private_key'],
+            'script': deploy_script.script,
+            'name': vm_['name'],
+            'deploy_command': '/tmp/deploy.sh',
+            'tty': True,
+            'start_action': __opts__['start_action'],
+            'sock_dir': __opts__['sock_dir'],
+            'conf_file': __opts__['conf_file'],
+            'minion_pem': vm_['priv_key'],
+            'minion_pub': vm_['pub_key'],
+            'keep_tmp': __opts__['keep_tmp'],
+            }
+
+        if 'script_args' in vm_:
+            deploy_kwargs['script_args'] = vm_['script_args']
+
+        deploy_kwargs['minion_conf'] = saltcloud.utils.minion_conf_string(
+            __opts__,
+            vm_
+        )
+
+        # Deploy salt-master files, if necessary
+        if 'make_master' in vm_ and vm_['make_master'] is True:
+            deploy_kwargs['make_master'] = True
+            deploy_kwargs['master_pub'] = vm_['master_pub']
+            deploy_kwargs['master_pem'] = vm_['master_pem']
+            master_conf = saltcloud.utils.master_conf_string(__opts__, vm_)
+            if master_conf:
+                deploy_kwargs['master_conf'] = master_conf
+
+            if 'syndic_master' in master_conf:
+                deploy_kwargs['make_syndic'] = True
+
+        deployed = saltcloud.utils.deploy_script(**deploy_kwargs)
         if deployed:
             log.info('Salt installed on {0}'.format(vm_['name']))
         else:
-            log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
+            log.error(
+                'Failed to start Salt on Cloud VM {0}'.format(
+                    vm_['name']
+                )
+            )
 
-    log.info('Created Cloud VM {0} with the following values:'.format(vm_['name']))
+    ret = {}
+    log.info(
+        'Created Cloud VM {0} with the following values:'.format(
+            vm_['name']
+        )
+    )
     for key, val in data.__dict__.items():
+        ret[key] = val
         log.info('  {0}: {1}'.format(key, val))
 
+    return ret
 
-def stop(name):
+
+def stop(name, call=None):
     '''
     Stop a node
     '''
+    data = {}
+
+    if call != 'action':
+        print('This action must be called with -a or --action.')
+        sys.exit(1)
+
     conn = get_conn()
     node = get_node(conn, name)
     try:
@@ -132,3 +177,4 @@ def stop(name):
         log.error('Failed to stop node {0}'.format(name))
         log.error(exc)
 
+    return data

@@ -24,13 +24,13 @@ import saltcloud.utils
 log = logging.getLogger(__name__)
 
 
-def node_state(id):
+def node_state(id_):
     states = {0: 'RUNNING',
               1: 'REBOOTING',
               2: 'TERMINATED',
               3: 'PENDING',
               4: 'UNKNOWN'}
-    return states[id]
+    return states[id_]
 
 
 def libcloud_version():
@@ -89,7 +89,7 @@ def avail_locations(conn=None):
     relevant data
     '''
     if not conn:
-	    conn = get_conn()
+        conn = get_conn()
 
     locations = conn.list_locations()
     ret = {}
@@ -190,17 +190,17 @@ def script(vm_):
     '''
     minion = saltcloud.utils.minion_conf_string(__opts__, vm_)
     return ScriptDeployment(
-            saltcloud.utils.os_script(
-                saltcloud.utils.get_option(
-                    'os',
-                    __opts__,
-                    vm_
-                    ),
-                vm_,
+        saltcloud.utils.os_script(
+            saltcloud.utils.get_option(
+                'os',
                 __opts__,
-                minion,
-                )
-            )
+                vm_
+            ),
+            vm_,
+            __opts__,
+            minion,
+        )
+    )
 
 
 def destroy(name, conn=None):
@@ -221,8 +221,10 @@ def destroy(name, conn=None):
         event = salt.utils.event.SaltEvent(
             'master',
             __opts__['sock_dir']
-            )
+        )
         event.fire_event('{0} has been destroyed'.format(name), 'salt-cloud')
+        if __opts__['delete_sshkeys'] is True:
+            saltcloud.utils.remove_sshkey(node.public_ips[0])
         return True
     else:
         log.error('Failed to Destroy VM: {0}'.format(name))
@@ -247,7 +249,7 @@ def reboot(name, conn=None):
         event = salt.utils.event.SaltEvent(
             'master',
             __opts__['sock_dir']
-            )
+        )
         event.fire_event('{0} has been rebooted'.format(name), 'salt-cloud')
         return True
     else:
@@ -266,12 +268,13 @@ def list_nodes(conn=None):
     ret = {}
     for node in nodes:
         ret[node.name] = {
-                'id': node.id,
-                'image': node.image,
-                'private_ips': node.private_ips,
-                'public_ips': node.public_ips,
-                'size': node.size,
-                'state': node_state(node.state)}
+            'id': node.id,
+            'image': node.image,
+            'private_ips': node.private_ips,
+            'public_ips': node.public_ips,
+            'size': node.size,
+            'state': node_state(node.state)
+        }
     return ret
 
 

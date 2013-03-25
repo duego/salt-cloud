@@ -4,10 +4,9 @@ Priority: optional
 Maintainer: Sean Channel <pentabular@gmail.com>
 Build-Depends: debhelper (>= 7.0.50),
                python | python-all | python-dev | python-all-dev,
-               python-libcloud,
                python-setuptools,
                python-sphinx,
-               python-yaml,
+               python-yaml
 Standards-Version: 3.9.3
 Homepage: http://saltstack.org
 #X-Python-Version: >= 2.6, <= 2.7
@@ -20,10 +19,10 @@ Depends: ${python:Depends},
          ${shlibs:Depends},
          python,
          python-libcloud,
-         python-paramiko,
          python-yaml,
-         salt-master,
-         salt-minion,
+         salt-common,
+         sshpass
+Recommends: python-botocore
 Description: public cloud VM management system
  provision virtual machines on various public clouds via a cleanly 
  controlled profile and mapping system.

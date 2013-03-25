@@ -42,9 +42,6 @@ Either a password or an API key must also be specified:
 # The import section is mostly libcloud boilerplate
 
 # Import python libs
-import os
-import types
-import tempfile
 import time
 import sys
 import logging
@@ -52,9 +49,6 @@ import socket
 
 # Import libcloud
 from libcloud.compute.base import NodeState
-from libcloud.compute.types import Provider
-from libcloud.compute.providers import get_driver
-from libcloud.compute.deployment import MultiStepDeployment, ScriptDeployment, SSHKeyDeployment
 
 # Import generic libcloud functions
 from saltcloud.libcloudfuncs import *
@@ -147,9 +141,16 @@ def preferred_ip(vm_, ips):
 
 def ssh_interface(vm_):
     '''
-    Return the ssh_interface type to connect to. Either 'public_ips' (default) or 'private_ips'.
+    Return the ssh_interface type to connect to. Either 'public_ips' (default)
+    or 'private_ips'.
     '''
-    return vm_.get('ssh_interface', __opts__.get('OPENSTACK.ssh_interface', 'public_ips'))
+    return vm_.get(
+        'ssh_interface',
+        __opts__.get(
+            'OPENSTACK.ssh_interface',
+            'public_ips'
+        )
+    )
 
 
 def create(vm_):
@@ -157,9 +158,8 @@ def create(vm_):
     Create a single VM from a data dict
     '''
     log.info('Creating Cloud VM {0}'.format(vm_['name']))
-    saltcloud.utils.check_name(vm_['name'], '[a-z0-9_-]')
+    saltcloud.utils.check_name(vm_['name'], 'a-zA-Z0-9_-')
     conn = get_conn()
-    deploy_script = script(vm_)
     kwargs = {}
     kwargs['name'] = vm_['name']
 
@@ -208,7 +208,8 @@ def create(vm_):
         public = nodelist[vm_['name']]['public_ips']
         running = nodelist[vm_['name']]['state'] == node_state(NodeState.RUNNING)
         if running and private and not public:
-            log.warn('Private IPs returned, but not public... checking for misidentified IPs')
+            log.warn('Private IPs returned, but not public... checking for '
+                     'misidentified IPs')
             for private_ip in private:
                 private_ip = preferred_ip(vm_, [private_ip])
                 if saltcloud.utils.is_public_ip(private_ip):
@@ -243,17 +244,23 @@ def create(vm_):
 
     deployargs = {
         'host': ip_address,
-        'script': deploy_script.script,
         'name': vm_['name'],
         'sock_dir': __opts__['sock_dir'],
         'start_action': __opts__['start_action'],
         'minion_pem': vm_['priv_key'],
         'minion_pub': vm_['pub_key'],
+        'keep_tmp': __opts__['keep_tmp'],
     }
 
-    deployargs['minion_conf'] = saltcloud.utils.minion_conf_string(__opts__, vm_)
+    if 'script_args' in vm_:
+        deploy_kwargs['script_args'] = vm_['script_args']
+
+    deployargs['minion_conf'] = saltcloud.utils.minion_conf_string(
+        __opts__,
+        vm_
+    )
     if 'ssh_username' in vm_:
-        deployargs['deploy_command'] = 'sudo /tmp/deploy.sh'
+        deployargs['deploy_command'] = '/tmp/deploy.sh'
         deployargs['username'] = vm_['ssh_username']
         deployargs['tty'] = True
     else:
@@ -262,7 +269,11 @@ def create(vm_):
 
     if 'OPENSTACK.ssh_key_file' in __opts__:
         deployargs['key_filename'] = __opts__['OPENSTACK.ssh_key_file']
-        log.debug('Using {0} as SSH key file'.format(deployargs['key_filename']))
+        log.debug(
+            'Using {0} as SSH key file'.format(
+                deployargs['key_filename']
+            )
+        )
     elif 'password' in data.extra:
         deployargs['password'] = data.extra['password']
         log.debug('Logging into SSH using password')
@@ -271,14 +282,47 @@ def create(vm_):
         deployargs['sudo'] = vm_['sudo']
         log.debug('Running root commands using sudo')
 
-    if __opts__['deploy'] is True:
+    deploy = vm_.get(
+        'deploy',
+        __opts__.get(
+            'OPENSTACK.deploy',
+            __opts__['deploy']
+        )
+    )
+    if deploy is True:
+        deploy_script = script(vm_)
+        deployargs['script'] = deploy_script.script
+
+        # Deploy salt-master files, if necessary
+        if 'make_master' in vm_ and vm_['make_master'] is True:
+            deploy_kwargs['make_master'] = True
+            deploy_kwargs['master_pub'] = vm_['master_pub']
+            deploy_kwargs['master_pem'] = vm_['master_pem']
+            master_conf = saltcloud.utils.master_conf_string(__opts__, vm_)
+            if master_conf:
+                deploy_kwargs['master_conf'] = master_conf
+
+            if 'syndic_master' in master_conf:
+                deploy_kwargs['make_syndic'] = True
+
         deployed = saltcloud.utils.deploy_script(**deployargs)
         if deployed:
             log.info('Salt installed on {0}'.format(vm_['name']))
         else:
-            log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
+            log.error(
+                'Failed to start Salt on Cloud VM {0}'.format(
+                    vm_['name']
+                )
+            )
 
-    log.info('Created Cloud VM {0} with the following values:'.format(vm_['name']))
+    ret = {}
+    log.info(
+        'Created Cloud VM {0} with the following values:'.format(
+            vm_['name']
+        )
+    )
     for key, val in data.__dict__.items():
+        ret[key] = val
         log.info('  {0}: {1}'.format(key, val))
 
+    return ret

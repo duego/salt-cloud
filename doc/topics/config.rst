@@ -2,9 +2,10 @@
 Core Configuration
 ==================
 
-A number of core configuration options and some options that are global to
-the vm profiles can be set in the cloud config file. By default this file is
+A number of core configuration options and some options that are global to the
+VM profiles can be set in the cloud config file. By default this file is
 located at ``/etc/salt/cloud``.
+
 
 Minion Configuration
 ====================
@@ -15,9 +16,10 @@ minions that are created derive their configuration.
 .. code-block:: yaml
 
     minion:
-      master: saltmaster.example.com
+        master: saltmaster.example.com
 
 This is the location in particular to specify the location of the salt master.
+
 
 Cloud Configurations
 ====================
@@ -113,11 +115,12 @@ both.
   # For Rackspace
   OPENSTACK.identity_url: 'https://identity.api.rackspacecloud.com/v2.0/tokens'
   OPENSTACK.compute_name: cloudServersOpenStack
-  OPENSTACK.compute_region: DFW
-  OPENSTACK.tenant: 5555555
-  OPENSTACK.user: myuser
-  OPENSTACK.password: mypass
   OPENSTACK.protocol: ipv4
+  OPENSTACK.compute_region: DFW
+  OPENSTACK.protocol: ipv4
+  OPENSTACK.user: myuser
+  OPENSTACK.tenant: 5555555
+  OPENSTACK.password: mypass
 
 If you have an API key for your provider, it may be specified instead of a
 password:
@@ -125,6 +128,9 @@ password:
 .. code-block:: yaml
 
   OPENSTACK.apikey: 901d3f579h23c8v73q9
+
+You will certainly need to configure the ``user``, ``tenant`` and either
+``password`` or ``apikey``.
 
 IBM SmartCloud Enterprise
 -------------------------

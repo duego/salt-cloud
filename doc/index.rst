@@ -26,6 +26,7 @@ Getting Started
 A quick guide covering getting started with Amazon AWS
 
 * :doc:`Getting Started With AWS <topics/aws>`
+* :doc:`Getting Started With Rackspace <topics/rackspace>`
 
 Core Configuration
 ==================
@@ -50,6 +51,16 @@ Once a VM has been deployed, a number of actions may be available to perform
 on it, depending on the specific cloud provider.
 
 * :doc:`Actions <topics/action>`
+
+Depending on your cloud provider, a number of functions may also be available
+which do not require a VM to be specified.
+
+* :doc:`Functions <topics/function>`
+
+Miscellaneous Options
+=====================
+
+* :doc:`Miscellaneous <topics/misc>`
 
 Extending Salt Cloud
 ====================

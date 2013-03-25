@@ -24,6 +24,9 @@ class CloudConfigMixIn(object):
     _mixin_prio_ = -1000    # First options seen
 
     def _mixin_setup(self):
+        self.master_config = {}
+        self.cloud_config = {}
+        self.profiles_config = {}
         group = self.config_group = optparse.OptionGroup(
             self,
             "Configuration Options",
@@ -36,16 +39,16 @@ class CloudConfigMixIn(object):
         )
         group.add_option(
             '-M', '--master-config',
-            default='/etc/salt/master',
-            help=('The location of the salt master config file. Default: '
-                  '%default')
+            default=None,
+            help='The location of the salt master config file. '
+                 'Default: /etc/salt/master'
         )
         group.add_option(
             '-V', '--profiles', '--vm_config',
             dest='vm_config',
-            default='/etc/salt/cloud.profiles',
-            help=('The location of the saltcloud VM config file. Default: '
-                  '%default')
+            default=None,
+            help='The location of the saltcloud VM config file. '
+                 'Default: /etc/salt/cloud.profiles'
         )
         self.add_option_group(group)
 
@@ -54,52 +57,6 @@ class CloudConfigMixIn(object):
         optvalue = getattr(self.options, name)
         if optvalue:
             setattr(self.options, name, os.path.abspath(optvalue))
-
-    def __merge_config_with_cli(self, *args):
-        # Taken from https://github.com/saltstack/salt/blob/develop/salt/utils/parsers.py#L175
-
-        # Merge parser options
-        for option in self.option_list:
-            if option.dest is None:
-                # --version does not have dest attribute set for example.
-                # All options defined by us, even if not explicitly(by kwarg),
-                # will have the dest attribute set
-                continue
-
-            # Get the passed value from shell. If empty get the default one
-            default = self.defaults.get(option.dest)
-            value = getattr(self.options, option.dest, default)
-
-            if option.dest not in self.config:
-                # There's no value in the configuration file
-                if value is not None:
-                    # There's an actual value, add it to the config
-                    self.config[option.dest] = value
-            elif value is not None and value != default:
-                # Only set the value in the config file IF it's not the default
-                # value, this allows to tweak settings on the configuration
-                # files bypassing the shell option flags
-                self.config[option.dest] = value
-
-        # Merge parser group options if any
-        for group in self.option_groups:
-            for option in group.option_list:
-                if option.dest is None:
-                    continue
-                # Get the passed value from shell. If empty get the default one
-                default = self.defaults.get(option.dest)
-                value = getattr(self.options, option.dest, default)
-                if option.dest not in self.config:
-                    # There's no value in the configuration file
-                    if value is not None:
-                        # There's an actual value, add it to the config
-                        self.config[option.dest] = value
-                else:
-                    if value is not None and value != default:
-                        # Only set the value in the config file IF it's not the
-                        # default value, this allows to tweak settings on the
-                        # configuration files bypassing the shell option flags
-                        self.config[option.dest] = value
 
     def _mixin_after_parsed(self):
         for option in self.config_group.option_list:
@@ -114,31 +71,69 @@ class CloudConfigMixIn(object):
 
         # Grab data from the 4 sources
         # 1st - Master config
-        # Done in CloudConfigMixIn.process_master_config()
+        # Loaded in CloudConfigMixIn.process_master_config()
+        # Start our configuration with a copy of the masters configuration
+        self.config = self.master_config.copy()
 
         # 2nd Override master config with salt-cloud config
-        # Done in CloudConfigMixIn.process_cloud_config()
+        # Loaded in CloudConfigMixIn.process_cloud_config()
+        # Let's override with the cloud's loaded settings.
+        self.config.update(self.cloud_config)
 
-        # 3rd - Override config with cli options
-        self.__merge_config_with_cli()
+        # 3rd - Include VM config
+        # Loaded in CloudConfigMixIn.process_vm_config()
+        self.config['vm'] = self.profiles_config
 
-        # 4th - Include VM config
-        self.config['vm'] = config.vm_config(self.options.vm_config)
+        # 4th - Override config with cli options
+        # Done in parsers.MergeConfigMixIn.__merge_config_with_cli()
 
         # Remove log_level_logfile from config if set to None so it can be
         # equal to console log_level
         if self.config['log_level_logfile'] is None:
             self.config.pop('log_level_logfile')
 
-    def process_master_config(self):
-        self.config = salt.config.master_config(
-            self.options.master_config
-        )
+    def setup_config(self):
+        '''
+        This method needs to be defined in order for `parsers.MergeConfigMixIn`
+        to do it's job.
+        '''
+        return {}
 
     def process_cloud_config(self):
-        self.config.update(config.cloud_config(self.options.cloud_config))
-    # Force process_cloud_config to run AFTER process_master_config
-    process_cloud_config._mixin_prio_ = -999
+        self.cloud_config = config.cloud_config(self.options.cloud_config)
+
+        # Store a temporary config dict with just the cloud settings so the
+        # logging level can be retrieved in LogLevelMixIn.process_log_level()
+        self.config = self.cloud_config
+
+        if self.options.master_config is None:
+            # No master config was provided from cli
+            # Set the master configuration file path to the one provided in
+            # the cloud's configuration or the default path.
+            self.options.master_config = self.cloud_config.get(
+                'master_config', '/etc/salt/master'
+            )
+        if self.options.vm_config is None:
+            # No profiles config was provided from cli
+            # Set the profiles configuration file path to the one provided in
+            # the cloud's configuration or the default path.
+            self.options.vm_config = self.cloud_config.get(
+                'vm_config', '/etc/salt/cloud.profiles'
+            )
+
+    def process_master_config(self):
+        self.master_config = salt.config.master_config(
+            self.options.master_config
+        )
+    # Force process_master_config to run AFTER process_cloud_config
+    process_master_config._mixin_prio_ = -999
+
+    def process_vm_config(self):
+        self.profiles_config = config.vm_profiles_config(
+            self.options.vm_config
+        )
+    # Force process_vm_config to run AFTER process_cloud_config
+    process_vm_config._mixin_prio_ = -998
 
 
 class ExecutionOptionsMixIn(object):
@@ -152,48 +147,93 @@ class ExecutionOptionsMixIn(object):
             # Include description here as a string
         )
         group.add_option(
+            '-L', '--location',
+            default='',
+            help='Specify which region to connect to.'
+        )
+        group.add_option(
             '-a', '--action',
             default='',
-            help=('Perform an action that may be specific to this cloud'
-                  'provider')
+            help=('Perform an action that may be specific to this cloud '
+                  'provider. This argument requires one or more instance '
+                  'names to be specified.')
+        )
+        group.add_option(
+            '-f', '--function',
+            nargs=2,
+            default='',
+            metavar='<FUNC-NAME> <PROVIDER>',
+            help=('Perform an function that may be specific to this cloud '
+                  'provider, that does not apply to an instance. This '
+                  'argument requires a provider to be specified (i.e.: nova).')
         )
         group.add_option(
             '-p', '--profile',
             default='',
-            help='Specify a profile to use for the VMs'
+            help='Create an instance using the specified profile.'
         )
         group.add_option(
             '-m', '--map',
             default='',
-            help='Specify a cloud map file to use for deployment'
+            help='Specify a cloud map file to use for deployment. This option '
+                 'may be used alone, or in conjunction with -Q, -F, -S or -d.'
         )
         group.add_option(
             '-H', '--hard',
             default=False,
             action='store_true',
-            help=('Delete all VMs that are not defined in the map file '
-                  'CAUTION!!! This operation can irrevocably destroy VMs!')
+            help='Delete all VMs that are not defined in the map file. '
+                 'CAUTION!!! This operation can irrevocably destroy VMs! It '
+                 'must be explicitly enabled in the cloud config file.'
         )
         group.add_option(
             '-d', '--destroy',
             default=False,
             action='store_true',
-            help='Specify a VM to destroy'
+            help='Destroy the specified instance(s).'
         )
         group.add_option(
             '--no-deploy',
             default=True,
             dest='deploy',
             action='store_false',
-            help='Don\'t run a deploy script after VM creation'
+            help='Don\'t run a deploy script after instance creation.'
         )
         group.add_option(
             '-P', '--parallel',
             default=False,
             action='store_true',
-            help='Build all of the specified virtual machines in parallel'
+            help='Build all of the specified instances in parallel.'
+        )
+        group.add_option(
+            '-u', '--update-bootstrap',
+            default=False,
+            action='store_true',
+            help='Update salt-bootstrap to the latest develop version on '
+                 'GitHub.'
+        )
+        group.add_option(
+            '-y', '--assume-yes',
+            default=False,
+            action='store_true',
+            help='Default yes in answer to all confirmation questions.'
+        )
+        group.add_option(
+            '-k', '--keep-tmp',
+            default=False,
+            action='store_true',
+            help='Do not remove files from /tmp/ after deploy.sh finishes.'
         )
         self.add_option_group(group)
+
+    def process_function(self):
+        if self.options.function:
+            self.function_provider, self.function_name = self.options.function
+            if self.function_name.startswith('-') or '=' in self.function_name:
+                self.error(
+                    '--function expects two arguments: <provider> '
+                    '<function-name>'
+                )
 
 
 class CloudQueriesMixIn(object):
@@ -229,6 +269,12 @@ class CloudQueriesMixIn(object):
             help=('Execute a query and return select information about '
                   'the nodes running on configured cloud providers')
         )
+        group.add_option(
+            '--list-providers',
+            default=False,
+            action='store_true',
+            help=('Display a list of configured providers.')
+        )
         self.add_option_group(group)
         self._create_process_functions()
 
@@ -241,6 +287,8 @@ class CloudQueriesMixIn(object):
                         query += '_full'
                     elif opt.dest == 'select_query':
                         query += '_select'
+                    elif opt.dest == 'list_providers':
+                        query = 'list_providers'
                     self.selected_query_option = query
 
             funcname = 'process_{0}'.format(option.dest)
@@ -306,16 +354,19 @@ class CloudProvidersListsMixIn(object):
         )
         if len(list_options_selected) > 1:
             self.error(
-                "The options {0} are mutually exclusive. Please only choose "
-                "one of them".format('/'.join([
-                    option.get_opt_string() for option in
-                    list_options_selected
-                ]))
+                'The options {0} are mutually exclusive. Please only choose '
+                'one of them'.format(
+                    '/'.join([
+                        option.get_opt_string() for option in
+                        list_options_selected
+                    ])
+                )
             )
 
 
 class SaltCloudParser(parsers.OptionParser,
                       parsers.LogLevelMixIn,
+                      parsers.MergeConfigMixIn,
                       parsers.OutputOptionsWithTextMixIn,
                       CloudConfigMixIn,
                       CloudQueriesMixIn,

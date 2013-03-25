@@ -24,17 +24,10 @@ The following paramters are required in order to create a node:
 # The import section is mostly libcloud boilerplate
 
 # Import python libs
-import os
-import sys
-import subprocess
 import time
-import types
 import logging
 
 # Import libcloud
-from libcloud.compute.types import Provider
-from libcloud.compute.providers import get_driver
-from libcloud.compute.deployment import MultiStepDeployment, ScriptDeployment, SSHKeyDeployment
 from libcloud.compute.base import NodeAuthSSHKey
 
 # Import generic libcloud functions
@@ -75,9 +68,9 @@ def get_conn():
     '''
     driver = get_driver(Provider.IBM)
     return driver(
-            __opts__['IBMSCE.user'],
-            __opts__['IBMSCE.password'],
-            )
+        __opts__['IBMSCE.user'],
+        __opts__['IBMSCE.password'],
+    )
 
 
 def create(vm_):
@@ -86,7 +79,6 @@ def create(vm_):
     '''
     log.info('Creating Cloud VM {0}'.format(vm_['name']))
     conn = get_conn()
-    deploy_script = script(vm_)
     kwargs = {}
     vm_['location'] = __opts__['IBMSCE.location']
     kwargs['name'] = vm_['name']
@@ -95,28 +87,34 @@ def create(vm_):
     kwargs['location'] = get_location(conn, vm_)
     kwargs['auth'] = NodeAuthSSHKey(__opts__['IBMSCE.ssh_key_name'])
 
-    log.debug('Creating instance on {0} at {1}'.format(time.strftime('%Y-%m-%d'), time.strftime('%H:%M:%S')))
+    log.debug(
+        'Creating instance on {0} at {1}'.format(
+            time.strftime('%Y-%m-%d'),
+            time.strftime('%H:%M:%S')
+        )
+    )
     try:
         data = conn.create_node(**kwargs)
     except Exception as exc:
-        message = str(exc)
-        err = ('Error creating {0} on IBMSCE\n\n'
-               'The following exception was thrown by libcloud when trying to '
-               'run the initial deployment: \n{1}').format(
-                       vm_['name'], message
-                       )
-        log.error(err)
+        log.error(
+            'Error creating {0} on IBMSCE\n\n'
+            'The following exception was thrown by libcloud when trying to '
+            'run the initial deployment: \n{1}'.format(
+                vm_['name'], str(exc)
+            )
+        )
         return False
 
     not_ready = True
     nr_count = 0
     while not_ready:
-        msg=('Looking for IP addresses for IBM SCE host {0} ({1} {2})'.format(
+        log.debug(
+            'Looking for IP addresses for IBM SCE host {0} ({1} {2})'.format(
                 vm_['name'],
                 time.strftime('%Y-%m-%d'),
                 time.strftime('%H:%M:%S'),
-            ))
-        log.debug(msg)
+            )
+        )
         nodelist = list_nodes()
         private = nodelist[vm_['name']]['private_ips']
         if private:
@@ -130,23 +128,71 @@ def create(vm_):
             not_ready = False
         time.sleep(15)
 
-    if __opts__['deploy'] is True:
-        log.debug('Deploying {0} using IP address {1}'.format(vm_['name'], data.public_ips[0]))
-        deployed = saltcloud.utils.deploy_script(
-            host=data.public_ips[0],
-            username='idcuser',
-            key_filename=__opts__['IBMSCE.ssh_key_file'],
-            script=deploy_script.script,
-            name=vm_['name'],
-            provider='ibmsce',
-            sudo=True,
-            start_action=__opts__['start_action'],
-            sock_dir=__opts__['sock_dir'])
+    deploy = vm_.get(
+        'deploy',
+        __opts__.get(
+            'IBMSCE.deploy',
+            __opts__['deploy']
+        )
+    )
+    if deploy is True:
+        deploy_script = script(vm_)
+        log.debug(
+            'Deploying {0} using IP address {1}'.format(
+                vm_['name'],
+                data.public_ips[0]
+            )
+        )
+        deploy_kwargs = {
+            'host': data.public_ips[0],
+            'username': 'idcuser',
+            'provider': 'ibmsce',
+            'password': data.extra['password'],
+            'key_filename': __opts__['IBMSCE.ssh_key_file'],
+            'script': deploy_script.script,
+            'name': vm_['name'],
+            'sudo': True,
+            'start_action': __opts__['start_action'],
+            'sock_dir': __opts__['sock_dir'],
+            'conf_file': __opts__['conf_file'],
+            'minion_pem': vm_['priv_key'],
+            'minion_pub': vm_['pub_key'],
+            'keep_tmp': __opts__['keep_tmp'],
+        }
+
+        if 'script_args' in vm_:
+            deploy_kwargs['script_args'] = vm_['script_args']
+
+        deploy_kwargs['minion_conf'] = saltcloud.utils.minion_conf_string(
+            __opts__, vm_
+        )
+
+        # Deploy salt-master files, if necessary
+        if 'make_master' in vm_ and vm_['make_master'] is True:
+            deploy_kwargs['make_master'] = True
+            deploy_kwargs['master_pub'] = vm_['master_pub']
+            deploy_kwargs['master_pem'] = vm_['master_pem']
+            master_conf = saltcloud.utils.master_conf_string(__opts__, vm_)
+            if master_conf:
+                deploy_kwargs['master_conf'] = master_conf
+
+            if 'syndic_master' in master_conf:
+                deploy_kwargs['make_syndic'] = True
+
+        deployed = saltcloud.utils.deploy_script(**deploy_kwargs)
         if deployed:
             log.info('Salt installed on {0}'.format(vm_['name']))
         else:
-            log.error('Failed to start Salt on Cloud VM {0}'.format(vm_['name']))
+            log.error(
+                'Failed to start Salt on Cloud VM {0}'.format(vm_['name'])
+            )
 
-    log.info('Created Cloud VM {0} with the following values:'.format(vm_['name']))
+    ret = {}
+    log.info(
+        'Created Cloud VM {0} with the following values:'.format(vm_['name'])
+    )
     for key, val in data.__dict__.items():
+        ret[key] = val
         log.info('  {0}: {1}'.format(key, val))
+
+    return ret

@@ -1,13 +1,13 @@
 import sys
 
-__version_info__ = (0, 8, 3)
+__version_info__ = (0, 8, 6)
 __version__ = '.'.join(map(str, __version_info__))
 
 
 def versions_report():
     libs = (
+        ("Salt", "salt", "__version__"),
         ("Apache Libcloud", "libcloud", "__version__"),
-        ("Paramiko", "paramiko", "__version__"),
         ("PyYAML", "yaml", "__version__"),
     )
 
@@ -15,7 +15,7 @@ def versions_report():
 
     fmt = '{0:>{pad}}: {1}'
 
-    yield fmt.format("Salt", __version__, pad=padding)
+    yield fmt.format("Salt Cloud", __version__, pad=padding)
 
     yield fmt.format(
         "Python", sys.version.rsplit('\n')[0].strip(), pad=padding
